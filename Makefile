@@ -3,6 +3,7 @@ SHELL := bash
 COMPOSE := docker compose
 INSTALL_DIR ?= $(HOME)/bin
 BACKUP_DIR ?= backups
+SYNC_KEEP ?= 30
 USER_SYSTEMD_DIR ?= $(HOME)/.config/systemd/user
 TELE_CONFIG_DIR ?= $(HOME)/.config/tele
 LISTENER_UNIT := tele-listener.service
@@ -13,7 +14,7 @@ restart_listener = @if systemctl --user is-active --quiet $(LISTENER_UNIT) 2>/de
 	fi
 
 .DEFAULT_GOAL := help
-.PHONY: help env up down restart status logs psql backup client-env build \
+.PHONY: help env up down restart status logs psql backup sync-db client-env build \
 	install start-listener stop-listener restart-listener listener-status listener-logs lint
 
 help: ## Liệt kê các lệnh
@@ -55,6 +56,9 @@ backup: ## Dump database ra backups/tele-<thời gian>.sql.gz
 	$(COMPOSE) exec -T db sh -c 'pg_dump -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"' \
 		| gzip > $(BACKUP_DIR)/tele-$$(date +%Y%m%d-%H%M%S).sql.gz
 	@ls -lh $(BACKUP_DIR) | tail -n 1
+
+sync-db: .env ## Kéo database remote về PostgreSQL local, giữ bản dump backups/remote-<thời gian>.sql.gz (SYNC_KEEP=30 bản)
+	@COMPOSE="$(COMPOSE)" BACKUP_DIR="$(BACKUP_DIR)" SYNC_KEEP="$(SYNC_KEEP)" ./scripts/sync-db
 
 client-env: .env ## In dòng TELE_DATABASE_URL để dán vào .env của server khác
 	@set -a; . ./.env; set +a; \

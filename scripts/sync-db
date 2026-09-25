@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Mirror the remote tele database into the local PostgreSQL of this checkout (`make up`).
+#
+# Each run keeps the remote dump as backups/remote-<time>.sql.gz. The local database is
+# replaced in a single transaction, and only after the dump arrived complete, so a network
+# failure part-way leaves the previous local copy untouched.
+#
+# Source: $TELE_REMOTE_DATABASE_URL, else TELE_DATABASE_URL from .env.
+set -euo pipefail
+
+PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$PROJECT_ROOT"
+
+read -ra compose <<<"${COMPOSE:-docker compose}"
+backup_dir="${BACKUP_DIR:-backups}"
+keep="${SYNC_KEEP:-30}"
+
+die() {
+  printf 'sync-db: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ -f .env ]] || die "chưa có .env: chạy 'make env' (hoặc cp .env.example .env rồi sửa)."
+override="${TELE_REMOTE_DATABASE_URL:-}"
+set -a
+. ./.env
+set +a
+source_url="${override:-${TELE_REMOTE_DATABASE_URL:-${TELE_DATABASE_URL:-}}}"
+
+case "$source_url" in
+  postgres://* | postgresql://*) ;;
+  *) die "cần URL PostgreSQL của database remote trong TELE_REMOTE_DATABASE_URL hoặc TELE_DATABASE_URL." ;;
+esac
+authority="${source_url#*://}"
+authority="${authority%%[/?]*}"
+authority="${authority##*@}"
+case "$authority" in
+  \[*) host="${authority%%]*}]" ;;
+  *) host="${authority%%:*}" ;;
+esac
+case "$host" in
+  "" | localhost | 127.* | "[::1]")
+    die "database nguồn ($host) là máy này; đặt TELE_REMOTE_DATABASE_URL trỏ về server remote." ;;
+esac
+
+masked="$(sed -E 's#(://[^:/@]+:)[^@]*@#\1***@#' <<<"$source_url")"
+stamp="$(date +%Y%m%d-%H%M%S)"
+dump="$backup_dir/remote-$stamp.sql.gz"
+part="$dump.part"
+mkdir -p "$backup_dir"
+trap 'rm -f -- "$part"' EXIT
+
+"${compose[@]}" --progress quiet up -d --wait db
+
+printf 'Dump %s -> %s\n' "$masked" "$dump"
+# pg_dump runs in the local db container so its version matches the server image.
+SYNC_SOURCE_URL="$source_url" "${compose[@]}" exec -T -e SYNC_SOURCE_URL -e PGCONNECT_TIMEOUT=15 db \
+  sh -c 'exec pg_dump --clean --if-exists --no-owner --no-privileges --dbname="$SYNC_SOURCE_URL"' \
+  | gzip >"$part"
+gzip -cd -- "$part" | tail -n 5 | grep -q 'PostgreSQL database dump complete' \
+  || die "bản dump không đầy đủ, giữ nguyên database local."
+mv -- "$part" "$dump"
+
+printf 'Restore -> database local (%s)\n' "${POSTGRES_DB:-tele}"
+gzip -cd -- "$dump" \
+  | "${compose[@]}" exec -T -e 'PGOPTIONS=-c client_min_messages=warning' db \
+    sh -c 'exec psql -X -q -v ON_ERROR_STOP=1 --single-transaction -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+    >/dev/null
+
+if ((keep > 0)); then
+  shopt -s nullglob
+  dumps=("$backup_dir"/remote-*.sql.gz)
+  if ((${#dumps[@]} > keep)); then
+    rm -f -- "${dumps[@]:0:${#dumps[@]}-keep}"
+  fi
+fi
+
+"${compose[@]}" exec -T db sh -c 'psql -X -At -F " " -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
+  SELECT (SELECT count(*) FROM messages), (SELECT count(*) FROM dialogs), (SELECT count(*) FROM peers)"' \
+  | {
+    read -r messages dialogs peers
+    printf 'Xong: %s tin, %s dialog, %s peer. Bản dump: %s (%s)\n' \
+      "$messages" "$dialogs" "$peers" "$dump" "$(du -h -- "$dump" | cut -f1)"
+  }
+printf 'Mất mạng thì dùng: TELE_DATABASE_URL=postgresql://%s:<POSTGRES_PASSWORD>@localhost:%s/%s\n' \
+  "${POSTGRES_USER:-tele}" "${TELE_DB_PORT:-5432}" "${POSTGRES_DB:-tele}"

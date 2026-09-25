@@ -57,6 +57,7 @@ make client-env   # in dòng TELE_DATABASE_URL để dán sang server khác
 | `make restart`, `make status`, `make logs` | Khởi động lại, xem trạng thái, xem log |
 | `make psql` | Mở psql vào database |
 | `make backup` | Dump ra `backups/tele-<thời gian>.sql.gz` |
+| `make sync-db` | Kéo database remote về PostgreSQL local của máy này, giữ bản dump `backups/remote-<thời gian>.sql.gz` ([chi tiết](docs/features/shared-postgres.md#bản-sao-local-make-sync-db)) |
 | `make client-env` | In `TELE_DATABASE_URL` cho server khác |
 | `make build` | Build binary vào `dist/` |
 | `make install` | Build, cài binary vào `~/bin` và systemd user service cho `tele listen` (listener đang chạy thì tự restart) |
