@@ -119,6 +119,9 @@ lỗi hoặc đã xoá thì in `download_status`). `time` và các mốc thời 
 | `location`, `contact`, `poll`, `dice`, ... | các loại đính kèm khác |
 | `service` | tin hệ thống, kèm `action`: `pin_message`, `phone_call`, `chat_add_user`, ... |
 
+`type` được lưu ở cột `messages.kind`, nên lọc thẳng được không cần JOIN `media`, vd.
+`tele-local sql "SELECT chat_id, id, date FROM messages WHERE kind = 'photo'"`.
+
 Mọi thông tin khác vẫn được lưu trong database. Thêm `--meta` (cả ở `tele-local messages` /
 `search`) để lấy đủ: `sender` (id, username, name), `outgoing`, `edit_date`,
 `reply_to_message_id`, `grouped_id`, `action`, `forward`, `reactions`, `views`, `links` (link ẩn

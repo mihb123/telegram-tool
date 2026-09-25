@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
 
+from tele_cli.cli import local as local_cli
 from tele_cli.config import Node, display_timezone
 from tele_cli.output import render_messages
-from tele_cli.store.database import SQLiteDatabase
+from tele_cli.store.database import SQLiteDatabase, split_statements
+from tele_cli.store.migrations import MIGRATIONS
 from tele_cli.store.payloads import compact, message_payload
 from tele_cli.store.repository import Store
 from tele_cli.telegram.history import _report_download
-from tele_cli.telegram.records import media_kind
+from tele_cli.telegram.records import media_kind, message_kind
 from tele_cli.values import parse_time_bound
 
 
@@ -36,6 +39,7 @@ def _message(message_id: int, text: str = "task") -> dict:
         "reply_to_message_id": None,
         "grouped_id": None,
         "service_action": None,
+        "kind": "text",
         "media": None,
         "meta": {},
     }
@@ -75,6 +79,7 @@ def test_short_message_payload_contains_only_agent_facing_fields() -> None:
         "media_kind": None,
         "media_type": None,
         "service_action": None,
+        "kind": "text",
         "text": "Help",
         "meta": None,
     }
@@ -146,6 +151,7 @@ def _media_row(**fields) -> dict:
         "sender_name": "Alice",
         "sender_username": "alice",
         "service_action": None,
+        "kind": "video",
         "outgoing": 0,
         "reply_to_message_id": None,
         "grouped_id": None,
@@ -207,9 +213,79 @@ def test_text_rendering_names_the_service_action() -> None:
 
 def test_forward_date_is_printed_in_the_display_timezone() -> None:
     row = {
-        **_media_row(media_type=None, media_kind=None),
+        **_media_row(media_type=None, media_kind=None, kind="text"),
         "meta": json.dumps({"forward": {"from_name": "Bob", "date": "2026-09-26T01:00:00+00:00"}}),
     }
     zone = timezone(timedelta(hours=7))
     payload = message_payload(row, [], Node("host", "user"), zone, meta=True)
     assert payload["forward"] == {"from_name": "Bob", "date": "2026-09-26 08:00:00"}
+
+
+@pytest.mark.parametrize(
+    ("text", "service_action", "media", "expected"),
+    [
+        ("Help", None, None, "text"),
+        (" 👍👍 ", None, None, "emoji"),
+        ("1️⃣", None, None, "emoji"),
+        ("1", None, None, "text"),
+        ("", "MessageActionPinMessage", None, "service"),
+        ("", None, {"kind": "photo"}, "photo"),
+        ("see https://x.io", None, {"kind": None}, "text"),  # link preview
+    ],
+)
+def test_message_kind_prefers_the_attachment(text, service_action, media, expected) -> None:
+    assert message_kind(text, service_action, media) == expected
+
+
+def test_saved_message_kind_is_printed_as_its_type(tmp_path) -> None:
+    with _store(tmp_path) as store:
+        store.save_peers([{"id": 10, "type": "User", "username": "alice", "name": "Alice"}])
+        store.save_messages(10, [{**_message(1, "👍"), "kind": "emoji"}])
+        row = store.message(10, 1)
+        assert row["kind"] == "emoji"
+        assert message_payload(row, [], store.node, UTC)["type"] == "emoji"
+
+
+def test_migration_7_backfills_message_kind_from_media_and_service_action(tmp_path) -> None:
+    database = SQLiteDatabase(tmp_path / "messages.db")
+    database.execute(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+    for number, migration in enumerate(MIGRATIONS[:6], start=1):
+        for statement in split_statements(migration):
+            database.execute(statement)
+        database.execute("INSERT INTO schema_migrations VALUES (?, 'then')", (number,))
+    database.execute("INSERT INTO peers (id, type, updated_at) VALUES (10, 'User', 'then')")
+    for message_id, action in [(1, None), (2, "MessageActionPinMessage"), (3, None), (4, None)]:
+        database.execute(
+            "INSERT INTO messages (account_id, chat_id, id, date, service_action, fetched_at) "
+            "VALUES (1, 10, ?, 'then', ?, 'then')",
+            (message_id, action),
+        )
+    database.execute(
+        "INSERT INTO media (account_id, chat_id, message_id, type, kind) "
+        "VALUES (1, 10, 3, 'Photo', 'photo'), (1, 10, 4, 'WebPage', NULL)"
+    )
+    database.migrate()
+    kinds = database.all("SELECT id, kind FROM messages ORDER BY id")
+    assert [(row["id"], row["kind"]) for row in kinds] == [
+        (1, "text"),
+        (2, "service"),
+        (3, "photo"),
+        (4, "text"),
+    ]
+
+
+def test_sql_rows_hold_only_json_values(tmp_path) -> None:
+    with _store(tmp_path) as store:
+        args = SimpleNamespace(query="SELECT x'00ff' AS blob, 1.5 AS ratio", max_rows=10)
+        assert local_cli._sql(store, args)["rows"] == [{"blob": "00ff", "ratio": 1.5}]
+    # What psycopg returns for date, timestamp, numeric and array columns.
+    moment = datetime(2026, 9, 25, 10, 15, 39, tzinfo=UTC)
+    assert local_cli._json_value(moment) == "2026-09-25T10:15:39+00:00"
+    assert local_cli._json_value(moment.date()) == "2026-09-25"
+    assert local_cli._json_value(Decimal("71151")) == 71151
+    assert local_cli._json_value(Decimal("0.25")) == 0.25
+    assert local_cli._json_value(Decimal("NaN")) == "NaN"
+    assert local_cli._json_value([moment.date(), None]) == ["2026-09-25", None]
+    json.dumps(local_cli._json_value([moment, Decimal("1"), b"\x01"]))

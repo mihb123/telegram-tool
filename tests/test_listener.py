@@ -43,6 +43,7 @@ def _message(message_id: int) -> dict:
         "reply_to_message_id": None,
         "grouped_id": None,
         "service_action": None,
+        "kind": "text",
         "media": None,
         "meta": {},
     }

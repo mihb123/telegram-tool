@@ -17,14 +17,6 @@ from ..values import display_time
 # Why an attachment has no file on this machine; the short message form reports these too.
 MISSING_FILE_STATUSES = frozenset({"skipped_too_large", "error", "file_missing"})
 
-# Pictographs and symbols, plus the joiners, variation selectors, tags and keycaps that
-# combine them into one emoji. Digits, "#" and "*" only count inside a keycap.
-_EMOJI_ONLY = re.compile(
-    "(?:[\U0001f000-\U0001faff\u2600-\u27bf\u2300-\u23ff\u2b00-\u2bff\u2194-\u2199\u21a9\u21aa"
-    "\u25a0-\u25ff\u2934\u2935\u3030\u303d\u3297\u3299\u00a9\u00ae\u203c\u2049\u2122\u2139"
-    "\u24c2\u200d\ufe0f\U000e0020-\U000e007f]|[0-9#*]\ufe0f?\u20e3|\\s)+"
-)
-
 
 def compact(mapping: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in mapping.items() if value is not None and value != ""}
@@ -72,16 +64,6 @@ def _sender_label(row: Any) -> str | int | None:
     return row["sender_name"] or row["sender_username"] or row["sender_id"]
 
 
-def message_type(row: Any) -> str:
-    """The attachment kind (photo, video, sticker, voice, file, ...), else service/emoji/text."""
-    if row["media_kind"]:
-        return row["media_kind"]
-    if row["service_action"]:
-        return "service"
-    text = (row["text"] or "").strip()
-    return "emoji" if text and _EMOJI_ONLY.fullmatch(text) else "text"
-
-
 def service_action(row: Any) -> str | None:
     """Readable service action: MessageActionPinMessage → pin_message."""
     action = (row["service_action"] or "").removeprefix("MessageAction")
@@ -108,7 +90,7 @@ def message_payload(
         payload["chat"] = compact(
             {"id": row["chat_id"], "name": row["chat_name"] or row["chat_username"]}
         )
-    kind = message_type(row)
+    kind = row["kind"]
     if not meta:
         sender = _sender_label(row)
         if sender is not None:

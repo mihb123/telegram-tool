@@ -189,4 +189,16 @@ MIGRATIONS: tuple[str, ...] = (
         PRIMARY KEY (account_id, name)
     );
     """,
+    # 7 — what a message is, readable without joining `media`: the attachment kind (photo,
+    # video, sticker, ...), else service, emoji or text. Emoji-only text cannot be told apart
+    # in SQL, so older ones stay 'text' until the message is fetched again.
+    """
+    ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text';
+    UPDATE messages SET kind = COALESCE(
+        (SELECT md.kind FROM media md
+         WHERE md.account_id = messages.account_id AND md.chat_id = messages.chat_id
+           AND md.message_id = messages.id),
+        CASE WHEN service_action IS NOT NULL THEN 'service' ELSE 'text' END
+    );
+    """,
 )

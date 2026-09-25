@@ -10,7 +10,9 @@ import argparse
 import re
 import time
 from collections.abc import Sequence
-from datetime import timedelta
+from datetime import date, timedelta
+from datetime import time as dt_time
+from decimal import Decimal
 from typing import Any
 
 from .. import __version__
@@ -536,6 +538,21 @@ def _listeners(store: Store, account_id: int | None) -> dict[str, Any]:
     return {"ok": True, "count": len(listeners), "listeners": listeners}
 
 
+def _json_value(value: Any) -> Any:
+    """A value JSON can hold: PostgreSQL dates, numerics, UUIDs... and SQLite blobs are not."""
+    if value is None or isinstance(value, (str, int, float, dict)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    if isinstance(value, Decimal) and value.is_finite():  # SUM(), AVG(), numeric columns
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, (date, dt_time)):
+        return value.isoformat()
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).hex()
+    return str(value)
+
+
 def _sql(store: Store, args: argparse.Namespace) -> dict[str, Any]:
     columns, rows = store.db.read_only_query(args.query, args.max_rows)
     truncated = len(rows) > args.max_rows
@@ -544,7 +561,9 @@ def _sql(store: Store, args: argparse.Namespace) -> dict[str, Any]:
         "columns": columns,
         "count": min(len(rows), args.max_rows),
         "truncated": truncated,
-        "rows": [dict(zip(columns, row, strict=True)) for row in rows[: args.max_rows]],
+        "rows": [
+            dict(zip(columns, map(_json_value, row), strict=True)) for row in rows[: args.max_rows]
+        ],
     }
 
 

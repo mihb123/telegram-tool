@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from telethon import types, utils
 
 from ..values import to_iso
+
+# Pictographs and symbols, plus the joiners, variation selectors, tags and keycaps that
+# combine them into one emoji. Digits, "#" and "*" only count inside a keycap.
+_EMOJI_ONLY = re.compile(
+    "(?:[\U0001f000-\U0001faff\u2600-\u27bf\u2300-\u23ff\u2b00-\u2bff\u2194-\u2199\u21a9\u21aa"
+    "\u25a0-\u25ff\u2934\u2935\u3030\u303d\u3297\u3299\u00a9\u00ae\u203c\u2049\u2122\u2139"
+    "\u24c2\u200d\ufe0f\U000e0020-\U000e007f]|[0-9#*]\ufe0f?\u20e3|\\s)+"
+)
 
 
 def peer_record(entity: Any) -> dict[str, Any]:
@@ -149,10 +158,24 @@ def meta_record(message: Any) -> dict[str, Any]:
     )
 
 
+def message_kind(text: str, service_action: str | None, media: dict[str, Any] | None) -> str:
+    """``messages.kind``: the attachment kind (photo, video, sticker, voice, file, ...), else
+    service, emoji or text. A link preview has no kind, so its message stays text."""
+    if media and media["kind"]:
+        return media["kind"]
+    if service_action:
+        return "service"
+    text = text.strip()
+    return "emoji" if text and _EMOJI_ONLY.fullmatch(text) else "text"
+
+
 def message_record(message: Any) -> dict[str, Any]:
     """Columns of the ``messages`` table plus nested ``sender`` and ``media`` records."""
     sender = getattr(message, "sender", None)
     action = getattr(message, "action", None)
+    text = getattr(message, "raw_text", None) or ""
+    service_action = type(action).__name__ if action is not None else None
+    media = media_record(message)
     return {
         "id": message.id,
         "date": to_iso(getattr(message, "date", None)),
@@ -160,10 +183,11 @@ def message_record(message: Any) -> dict[str, Any]:
         "sender_id": getattr(message, "sender_id", None),
         "sender": peer_record(sender) if sender is not None else None,
         "outgoing": bool(getattr(message, "out", False)),
-        "text": getattr(message, "raw_text", None) or "",
+        "text": text,
         "reply_to_message_id": getattr(message, "reply_to_msg_id", None),
         "grouped_id": getattr(message, "grouped_id", None),
-        "service_action": type(action).__name__ if action is not None else None,
-        "media": media_record(message),
+        "service_action": service_action,
+        "kind": message_kind(text, service_action, media),
+        "media": media,
         "meta": meta_record(message),
     }

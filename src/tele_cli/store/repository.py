@@ -19,7 +19,7 @@ LISTENER_LEASE_EXIT_CODE = 11
 
 MESSAGE_COLUMNS = """
 m.chat_id, m.id, m.date, m.edit_date, m.sender_id, m.outgoing, m.text,
-       m.reply_to_message_id, m.grouped_id, m.service_action, m.meta,
+       m.reply_to_message_id, m.grouped_id, m.service_action, m.kind, m.meta,
        c.name AS chat_name, c.username AS chat_username,
        s.username AS sender_username, s.name AS sender_name,
        md.type AS media_type, md.kind AS media_kind, md.name AS media_name,
@@ -56,9 +56,10 @@ ON CONFLICT (id) DO UPDATE SET
 
 UPSERT_MESSAGE = """
 INSERT INTO messages (account_id, chat_id, id, date, edit_date, sender_id, outgoing, text,
-                      reply_to_message_id, grouped_id, service_action, meta, fetched_at)
+                      reply_to_message_id, grouped_id, service_action, kind, meta,
+                      fetched_at)
 VALUES (:account_id, :chat_id, :id, :date, :edit_date, :sender_id, :outgoing, :text,
-        :reply_to_message_id, :grouped_id, :service_action, :meta, :now)
+        :reply_to_message_id, :grouped_id, :service_action, :kind, :meta, :now)
 ON CONFLICT (account_id, chat_id, id) DO UPDATE SET
     date = excluded.date,
     edit_date = excluded.edit_date,
@@ -68,6 +69,7 @@ ON CONFLICT (account_id, chat_id, id) DO UPDATE SET
     reply_to_message_id = excluded.reply_to_message_id,
     grouped_id = excluded.grouped_id,
     service_action = excluded.service_action,
+    kind = excluded.kind,
     meta = excluded.meta,
     fetched_at = excluded.fetched_at
 """
@@ -99,6 +101,7 @@ MESSAGE_FIELDS = (
     "reply_to_message_id",
     "grouped_id",
     "service_action",
+    "kind",
 )
 MEDIA_FIELDS = (
     "type",
