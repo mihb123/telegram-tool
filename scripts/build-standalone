@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Build single-file `tele` and `tele-local` binaries into dist/ with a SHA256SUMS file.
+set -euo pipefail
+
+PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+DIST="$PROJECT_ROOT/dist"
+
+cd "$PROJECT_ROOT"
+uv sync
+rm -rf "$DIST"
+
+build() {
+  local name="$1" entry="$2"
+  uv run pyinstaller \
+    --noconfirm \
+    --clean \
+    --onefile \
+    --name "$name" \
+    --paths "$PROJECT_ROOT/src" \
+    --hidden-import psycopg_binary \
+    --distpath "$DIST" \
+    --workpath "$PROJECT_ROOT/build/pyinstaller" \
+    --specpath "$PROJECT_ROOT/build" \
+    "$PROJECT_ROOT/scripts/entrypoints/$entry"
+  chmod 755 "$DIST/$name"
+}
+
+build tele tele.py
+build tele-local tele_local.py
+
+(cd "$DIST" && sha256sum tele tele-local > SHA256SUMS)
+
+printf 'Built %s and %s\n' "$DIST/tele" "$DIST/tele-local"
+cat "$DIST/SHA256SUMS"

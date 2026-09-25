@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Tool caches
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# Build output (scripts/build-standalone) and database dumps (make backup)
+build/
+dist/
+*.spec
+backups/
+
+# Private Telegram data: credentials, session, message store, media
+.env
+*.session
+*.session-journal
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+telegram-files/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+tests/
+bin/

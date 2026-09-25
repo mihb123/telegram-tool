@@ -1,0 +1,24 @@
+# Shared PostgreSQL for the tele message store. Start/stop with `make up` / `make down`.
+# Settings come from .env (see .env.example).
+name: tele
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tele}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (make env)}
+      POSTGRES_DB: ${POSTGRES_DB:-tele}
+    ports:
+      - "${TELE_DB_BIND:-127.0.0.1}:${TELE_DB_PORT:-5432}:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  db-data:

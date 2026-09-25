@@ -1,0 +1,25 @@
+[project]
+name = "tele-cli"
+version = "0.6.0"
+description = "Read, store in a shared database, query and reply to Telegram messages from a personal account"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "aiohttp>=3.12,<4",
+  "cryptg>=0.5,<1",
+  "psycopg[binary]>=3.2,<4",
+  "telethon>=1.45.0,<2",
+]
+
+[dependency-groups]
+dev = [
+  "pyinstaller>=6.16,<7",
+  "ruff>=0.13,<1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
