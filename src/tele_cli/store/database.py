@@ -114,9 +114,10 @@ class Database:
         except self.errors as exc:
             raise store_error(exc, self.label, self.connection_hint) from exc
 
-    def execute(self, sql: str, params: Params = ()) -> None:
+    def execute(self, sql: str, params: Params = ()) -> int:
+        """Execute one statement and return its affected-row count when available."""
         with self._guard():
-            self._execute(sql, params)
+            return self._execute(sql, params).rowcount
 
     def executemany(self, sql: str, rows: Iterable[Params]) -> None:
         rows = list(rows)
@@ -330,6 +331,8 @@ class PostgresDatabase(Database):
 
     @contextmanager
     def _transaction(self) -> Iterator[None]:
+        if self.connection.broken:  # dropped since the last statement; nothing to roll back
+            self._connect()
         with self.connection.transaction():
             yield
 

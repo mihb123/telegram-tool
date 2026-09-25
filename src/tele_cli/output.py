@@ -25,8 +25,17 @@ def dump_json(payload: dict[str, Any], stream: TextIO | None = None) -> None:
     stream.write("{\n" + ",\n".join(entries) + "\n}\n")
 
 
-def _label(peer: dict[str, Any] | None) -> str:
-    peer = peer or {}
+def dump_json_line(payload: dict[str, Any], stream: TextIO | None = None) -> None:
+    """Write one flush-safe JSON line for long-running commands."""
+    stream = stream or sys.stdout
+    stream.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    stream.flush()
+
+
+def _label(peer: dict[str, Any] | str | int | None) -> str:
+    """Display name of a peer record, or the short ``sender`` label as-is."""
+    if not isinstance(peer, dict):
+        return str(peer or "unknown")
     return str(peer.get("name") or peer.get("username") or peer.get("id") or "unknown")
 
 
@@ -37,19 +46,27 @@ def render_messages(payload: dict[str, Any]) -> str:
         lines.append(f"Chat: {_label(chat)} ({chat['id']})")
     for message in payload["messages"]:
         where = f" in {_label(message['chat'])}" if message.get("chat") else ""
-        media = message.get("media") or {}
-        fallback = media.get("type") or message.get("service_action") or "empty"
+        sender = f" {_label(message['sender'])}" if message.get("sender") else ""
+        details = message.get("media") or {}
+        kind = message.get("type", "text")
+        if kind == "service":
+            label = f"[{message.get('action') or kind}]"
+        else:
+            label = f"[{kind}]" if kind not in ("text", "emoji") else ""
         lines += [
             "",
-            f"[{message['date']}] #{message['id']} {_label(message.get('sender'))}{where}",
-            message.get("text") or f"[{fallback}]",
+            f"[{message['time']}] #{message['id']}{sender}{where}",
+            " ".join(filter(None, [label, message.get("text") or message.get("emoji")]))
+            or "[empty]",
         ]
-        if media.get("local_path"):
-            lines.append(f"Media: {media['local_path']}")
-        elif media.get("files"):
-            lines += [f"Media on {f['user']}@{f['host']}: {f['path']}" for f in media["files"]]
-        elif media.get("download_status"):
-            lines.append(f"Media: {media['download_status']}")
+        path = message.get("path") or details.get("local_path")
+        status = details.get("download_status") or message.get("download_status")
+        if path:
+            lines.append(f"Media: {path}")
+        elif details.get("files"):
+            lines += [f"Media on {f['user']}@{f['host']}: {f['path']}" for f in details["files"]]
+        elif status:
+            lines.append(f"Media: {status}")
     return "\n".join(lines)
 
 

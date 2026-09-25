@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 
 from .errors import TeleError
 
@@ -32,15 +32,21 @@ def to_iso(value: datetime | None) -> str | None:
     return value.astimezone(UTC).isoformat() if value else None
 
 
+def display_time(value: str | None, zone: tzinfo) -> str | None:
+    """Short printed form of a stored timestamp: "yyyy-mm-dd HH:MM:SS" in ``zone``."""
+    return from_iso(value).astimezone(zone).strftime("%Y-%m-%d %H:%M:%S") if value else None
+
+
 def from_iso(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
-def parse_time_bound(value: str, *, end_of_day: bool = False) -> str:
+def parse_time_bound(value: str, zone: tzinfo, *, end_of_day: bool = False) -> str:
     """Parse "30m", "2h", "3d", "1w", "2026-09-25" or an ISO datetime into stored format.
 
-    Naive values use the local timezone. With ``end_of_day`` a bare date means the
-    start of the following day, so an exclusive upper bound still includes that date.
+    Naive values are in ``zone``, the zone printed times use, so a copied ``time`` matches
+    itself. With ``end_of_day`` a bare date means the start of the following day, so an
+    exclusive upper bound still includes that date.
     """
     text = value.strip()
     relative = _RELATIVE_TIME.match(text.lower())
@@ -50,7 +56,7 @@ def parse_time_bound(value: str, *, end_of_day: bool = False) -> str:
     else:
         moment = datetime.fromisoformat(text)
         if moment.tzinfo is None:
-            moment = moment.astimezone()
+            moment = moment.replace(tzinfo=zone)
         if end_of_day and len(text) == 10:
             moment += timedelta(days=1)
     return to_iso(moment.replace(microsecond=0))

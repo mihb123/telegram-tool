@@ -7,7 +7,7 @@ thẳng từ database, **không kết nối Telegram**; nếu không thì chỉ 
 
 ## Lệnh
 
-`tele get -u <target> [-l 1..100] [--max-age GIÂY] [--refresh] [--download-media] [-d DIR] [--max-media-mb N] [--format json|text]`
+`tele get -u <target> [-l 1..5000] [--meta] [--max-age GIÂY] [--refresh] [--download-media] [-d DIR] [--max-media-mb N] [--format json|text]`
 
 ## Luồng xử lý (`telegram/history.py:get_messages`)
 
@@ -35,12 +35,12 @@ thẳng từ database, **không kết nối Telegram**; nếu không thì chỉ 
 | File | Vai trò |
 |---|---|
 | `src/tele_cli/telegram/history.py` | Toàn bộ logic đọc database trước / đồng bộ phần thiếu: `_is_fresh`, `_covers_latest`, `_latest_window`, class `_Sync`, `_payload`, `get_messages` |
-| `src/tele_cli/cli/tele.py` | Subcommand `get`, mặc định `--max-age` lấy từ `TELE_CACHE_MAX_AGE` (`_default_max_age`), giới hạn `-l` 1..100 |
+| `src/tele_cli/cli/tele.py` | Subcommand `get`, mặc định `--max-age` lấy từ `TELE_CACHE_MAX_AGE` (`_default_max_age`), giới hạn `-l` 1..`MAX_GET_LIMIT` (5000), `--meta` (`args.add_meta`) |
 | `src/tele_cli/telegram/client.py` | `authorized_client()`, `resolve_chat()` (resolve target, lưu chat vào `peers`, ghi nhận máy lần đầu) |
-| `src/tele_cli/telegram/records.py` | `message_record()` / `media_record()` đổi tin Telethon thành bản ghi theo bảng |
+| `src/tele_cli/telegram/records.py` | `message_record()` / `media_record()` (`media_kind()` nhận biết sticker, voice, gif, video_note... qua thuộc tính Telethon) đổi tin Telethon thành bản ghi theo bảng; `meta_record()` gom các trường không có cột riêng (forward, reactions, views, links, link_preview) vào cột JSON `messages.meta` |
 | `src/tele_cli/store/repository.py` | `save_messages`, `delete_messages_except`, `lock_chat`, `sync_state`, `set_head`, `add_range`, `head_range`, `count_messages`, `newest_message_id`, `latest_messages`, `MAX_MESSAGE_ID` |
 | `src/tele_cli/store/migrations.py` | Bảng `messages`, `sync_state`, `sync_ranges` |
-| `src/tele_cli/store/payloads.py` | `messages_payload`, `peer_payload` dựng JSON gọn |
+| `src/tele_cli/store/payloads.py` | `messages_payload`, `peer_payload` dựng JSON: mặc định `id`, `time`, `sender` (tên), `type` (`message_type`: kind của media / `service` / `emoji` / `text`), `text`, `path` (hoặc `download_status` khi thiếu file); `meta=True` thêm mọi trường đã lưu. `time`/`edit_date` in `yyyy-mm-dd HH:MM:SS` theo `config.display_timezone()` (`TELE_TIMEZONE`, mặc định UTC+7) |
 | `src/tele_cli/output.py` | `render_messages` cho `--format text` |
 
 ## Lưu ý khi sửa

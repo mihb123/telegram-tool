@@ -1,0 +1,24 @@
+[Unit]
+Description=Persistent Telegram listener for local coding agents
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# `make install` rewrites this path to $(INSTALL_DIR)/tele.
+ExecStart=%h/bin/tele listen
+Restart=always
+# Back off 5s → 5min between restarts so a long outage does not hammer Telegram.
+RestartSec=5
+RestartSteps=6
+RestartMaxDelaySec=300
+# Invalid config (2, 3), unauthorized session (4) or an unknown chat (5) never fix themselves:
+# stay stopped until the config is corrected and the service is started again.
+RestartPreventExitStatus=2 3 4 5
+KillSignal=SIGINT
+SuccessExitStatus=130
+TimeoutStopSec=20
+UMask=0077
+
+[Install]
+WantedBy=default.target

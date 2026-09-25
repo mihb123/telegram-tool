@@ -1,6 +1,6 @@
 [project]
 name = "tele-cli"
-version = "0.6.0"
+version = "0.8.0"
 description = "Read, store in a shared database, query and reply to Telegram messages from a personal account"
 requires-python = ">=3.11,<3.15"
 dependencies = [
@@ -10,9 +10,18 @@ dependencies = [
   "telethon>=1.45.0,<2",
 ]
 
+[project.scripts]
+tele = "tele_cli.cli.tele:main"
+tele-local = "tele_cli.cli.local:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
 [dependency-groups]
 dev = [
   "pyinstaller>=6.16,<7",
+  "pytest>=8,<9",
   "ruff>=0.13,<1",
 ]
 

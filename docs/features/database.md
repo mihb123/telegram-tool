@@ -24,11 +24,15 @@ Store (repository.py)         mọi câu đọc/ghi nghiệp vụ, gắn với 1
 | `nodes` | máy (host + user OS) và tài khoản Telegram của máy đó | `(host, os_user)` |
 | `peers` | user/group/channel, dùng chung mọi tài khoản | `id` |
 | `dialogs` | danh sách hội thoại theo tài khoản | `(account_id, peer_id)` |
-| `messages` | nội dung tin | `(account_id, chat_id, id)` |
-| `media` | metadata đính kèm, `file_key` | `(account_id, chat_id, message_id)` |
+| `messages` | nội dung tin; cột JSON `meta` (migration 2) giữ forward, reactions, views, links, link_preview | `(account_id, chat_id, id)` |
+| `media` | metadata đính kèm, `file_key`; cột `kind` (migration 4) = photo, video, gif, sticker, voice, audio, video_note, file, location...; `NULL` với link preview. Bản ghi cũ được đoán theo MIME, lấy lại tin sẽ ghi đúng | `(account_id, chat_id, message_id)` |
 | `media_files` | bản sao đã tải trên từng máy | `(account_id, chat_id, message_id, host, os_user)` |
 | `sync_state` | tin mới nhất và thời điểm hỏi Telegram gần nhất | `(account_id, chat_id)` |
 | `sync_ranges` | các khoảng ID đã lưu liên tục | `(account_id, chat_id, start_id)` |
+| `inbox_events` | cursor bền vững cho incoming message do `tele listen` nhận | `(account_id, event_id)` |
+| `inbox_sequence` | cursor lớn nhất đã cấp cho mỗi tài khoản (migration 5); không lùi khi event bị xoá theo tin | `account_id` |
+| `inbox_consumers` | cursor có tên của từng agent cho `tele-local inbox/wait --consumer` (migration 6) | `(account_id, name)` |
+| `listeners` | process listener và heartbeat để chặn chạy trùng | `(account_id, host, os_user, process_id)` |
 | `schema_migrations` | migration đã chạy | `version` |
 
 ## File liên quan

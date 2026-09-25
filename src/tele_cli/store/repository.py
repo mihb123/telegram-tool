@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 from ..config import Node, current_node
@@ -11,21 +14,34 @@ from .database import SCHEMA_VERSION, Database, open_database
 
 # Upper bound for "every message newer than X" ranges.
 MAX_MESSAGE_ID = 2**63 - 1
+LISTENER_STALE_SECONDS = 30
+LISTENER_LEASE_EXIT_CODE = 11
 
-MESSAGE_SELECT = """
-SELECT m.chat_id, m.id, m.date, m.edit_date, m.sender_id, m.outgoing, m.text,
-       m.reply_to_message_id, m.grouped_id, m.service_action,
+MESSAGE_COLUMNS = """
+m.chat_id, m.id, m.date, m.edit_date, m.sender_id, m.outgoing, m.text,
+       m.reply_to_message_id, m.grouped_id, m.service_action, m.meta,
        c.name AS chat_name, c.username AS chat_username,
        s.username AS sender_username, s.name AS sender_name,
-       md.type AS media_type, md.name AS media_name, md.mime_type AS media_mime_type,
-       md.size AS media_size, md.width AS media_width, md.height AS media_height,
-       md.duration AS media_duration, md.download_status AS media_download_status,
-       md.download_error AS media_download_error
-FROM messages m
+       md.type AS media_type, md.kind AS media_kind, md.name AS media_name,
+       md.mime_type AS media_mime_type, md.size AS media_size, md.width AS media_width,
+       md.height AS media_height, md.duration AS media_duration,
+       md.download_status AS media_download_status, md.download_error AS media_download_error
+"""
+
+MESSAGE_JOINS = """
 JOIN peers c ON c.id = m.chat_id
 LEFT JOIN peers s ON s.id = m.sender_id
 LEFT JOIN media md
     ON md.account_id = m.account_id AND md.chat_id = m.chat_id AND md.message_id = m.id
+"""
+
+MESSAGE_SELECT = f"SELECT {MESSAGE_COLUMNS} FROM messages m {MESSAGE_JOINS}"
+INBOX_SELECT = f"""
+SELECT i.event_id, i.received_at, {MESSAGE_COLUMNS}
+FROM inbox_events i
+JOIN messages m
+    ON m.account_id = i.account_id AND m.chat_id = i.chat_id AND m.id = i.message_id
+{MESSAGE_JOINS}
 """
 
 UPSERT_PEER = """
@@ -40,9 +56,9 @@ ON CONFLICT (id) DO UPDATE SET
 
 UPSERT_MESSAGE = """
 INSERT INTO messages (account_id, chat_id, id, date, edit_date, sender_id, outgoing, text,
-                      reply_to_message_id, grouped_id, service_action, fetched_at)
+                      reply_to_message_id, grouped_id, service_action, meta, fetched_at)
 VALUES (:account_id, :chat_id, :id, :date, :edit_date, :sender_id, :outgoing, :text,
-        :reply_to_message_id, :grouped_id, :service_action, :now)
+        :reply_to_message_id, :grouped_id, :service_action, :meta, :now)
 ON CONFLICT (account_id, chat_id, id) DO UPDATE SET
     date = excluded.date,
     edit_date = excluded.edit_date,
@@ -52,16 +68,18 @@ ON CONFLICT (account_id, chat_id, id) DO UPDATE SET
     reply_to_message_id = excluded.reply_to_message_id,
     grouped_id = excluded.grouped_id,
     service_action = excluded.service_action,
+    meta = excluded.meta,
     fetched_at = excluded.fetched_at
 """
 
 UPSERT_MEDIA = """
-INSERT INTO media (account_id, chat_id, message_id, type, file_key, name, extension, mime_type,
-                   size, width, height, duration)
-VALUES (:account_id, :chat_id, :message_id, :type, :file_key, :name, :extension, :mime_type,
-        :size, :width, :height, :duration)
+INSERT INTO media (account_id, chat_id, message_id, type, kind, file_key, name, extension,
+                   mime_type, size, width, height, duration)
+VALUES (:account_id, :chat_id, :message_id, :type, :kind, :file_key, :name, :extension,
+        :mime_type, :size, :width, :height, :duration)
 ON CONFLICT (account_id, chat_id, message_id) DO UPDATE SET
     type = excluded.type,
+    kind = excluded.kind,
     file_key = excluded.file_key,
     name = excluded.name,
     extension = excluded.extension,
@@ -84,6 +102,7 @@ MESSAGE_FIELDS = (
 )
 MEDIA_FIELDS = (
     "type",
+    "kind",
     "file_key",
     "name",
     "extension",
@@ -288,6 +307,9 @@ class Store:
                         **key,
                         **{field: record[field] for field in MESSAGE_FIELDS},
                         "outgoing": int(record["outgoing"]),
+                        "meta": json.dumps(record["meta"], ensure_ascii=False)
+                        if record.get("meta")
+                        else None,
                         "now": now,
                     }
                     for record in records
@@ -321,6 +343,132 @@ class Store:
                     for message_id, media in attached.items()
                 ],
             )
+
+    def save_inbox_message(self, chat: dict[str, Any], record: dict[str, Any]) -> int | None:
+        """Persist one listener message and allocate its durable account-wide cursor."""
+        chat_id, message_id = chat["id"], record["id"]
+        with self.transaction():
+            self.db.lock(f"tele:inbox:{self.account}")
+            self.save_peers([chat])
+            self.save_messages(chat_id, [record])
+            existing = self.db.scalar(
+                "SELECT event_id FROM inbox_events "
+                "WHERE account_id = ? AND chat_id = ? AND message_id = ?",
+                (self.account, chat_id, message_id),
+            )
+            if existing is not None:
+                return None
+            self.db.execute(
+                "INSERT INTO inbox_sequence (account_id, last_event_id) VALUES (?, 1) "
+                "ON CONFLICT (account_id) DO UPDATE "
+                "SET last_event_id = inbox_sequence.last_event_id + 1",
+                (self.account,),
+            )
+            event_id = self.latest_inbox_event_id()
+            self.db.execute(
+                "INSERT INTO inbox_events "
+                "(account_id, event_id, chat_id, message_id, received_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (self.account, event_id, chat_id, message_id, to_iso(utc_now())),
+            )
+            return event_id
+
+    # --- listener lifecycle ---------------------------------------------------------------
+
+    def _listener_already_running(self, active: Any) -> TeleError:
+        owner = f"{active['os_user']}@{active['host']} (pid {active['process_id']})"
+        return TeleError(
+            "listener_already_running",
+            f"A healthy listener already owns this Telegram account: {owner}.",
+            exit_code=LISTENER_LEASE_EXIT_CODE,
+            hint="Use `tele-local listeners` to inspect it; do not start duplicates.",
+        )
+
+    def _local_listener_is_dead(self, active: Any) -> bool:
+        if active["host"] != self.node.host or active["os_user"] != self.node.user:
+            return False
+        try:
+            os.kill(active["process_id"], 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        return False
+
+    def active_listener(self) -> Any | None:
+        """The account's lease with a recent heartbeat, ignoring crashed processes on this node."""
+        cutoff = to_iso(utc_now() - timedelta(seconds=LISTENER_STALE_SECONDS))
+        rows = self.db.all(
+            "SELECT host, os_user, process_id FROM listeners "
+            "WHERE account_id = ? AND heartbeat_at >= ?",
+            (self.account, cutoff),
+        )
+        return next((row for row in rows if not self._local_listener_is_dead(row)), None)
+
+    def assert_listener_available(self) -> None:
+        """Fail before opening Telegram when another listener heartbeat is still healthy."""
+        if self.account_id is None:
+            return
+        if (active := self.active_listener()) is not None:
+            raise self._listener_already_running(active)
+
+    def claim_listener(self, process_id: int) -> None:
+        """Claim the account listener lease, rejecting another recently healthy process."""
+        with self.transaction():
+            self.db.lock(f"tele:listener:{self.account}")
+            if (active := self.active_listener()) is not None:
+                raise self._listener_already_running(active)
+            # Every remaining lease is stale or belongs to a dead local process.
+            self.db.execute("DELETE FROM listeners WHERE account_id = ?", (self.account,))
+            timestamp = to_iso(utc_now())
+            self.db.execute(
+                "INSERT INTO listeners "
+                "(account_id, host, os_user, process_id, started_at, heartbeat_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    self.account,
+                    self.node.host,
+                    self.node.user,
+                    process_id,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+
+    def heartbeat_listener(self, process_id: int) -> None:
+        """Refresh this process's listener lease so duplicate daemons remain detectable."""
+        updated = self.db.execute(
+            "UPDATE listeners SET heartbeat_at = ? "
+            "WHERE account_id = ? AND host = ? AND os_user = ? AND process_id = ?",
+            (
+                to_iso(utc_now()),
+                self.account,
+                self.node.host,
+                self.node.user,
+                process_id,
+            ),
+        )
+        if updated != 1:
+            raise TeleError(
+                "listener_lease_lost",
+                "This process no longer owns the Telegram listener lease.",
+                exit_code=LISTENER_LEASE_EXIT_CODE,
+                hint="The listener will stop so only the current lease owner remains active.",
+            )
+
+    def release_listener(self, process_id: int) -> None:
+        """Release this process's listener lease after a graceful shutdown."""
+        self.db.execute(
+            "DELETE FROM listeners "
+            "WHERE account_id = ? AND host = ? AND os_user = ? AND process_id = ?",
+            (self.account, self.node.host, self.node.user, process_id),
+        )
+
+    def listeners(self) -> list[Any]:
+        return self.db.all(
+            "SELECT account_id, host, os_user, process_id, started_at, heartbeat_at "
+            "FROM listeners ORDER BY heartbeat_at DESC"
+        )
 
     def delete_messages_except(self, chat_id: int, low: int, high: int, keep: list[int]) -> None:
         """Drop local messages in [low, high] that Telegram no longer returns (deleted)."""
@@ -481,6 +629,59 @@ class Store:
             (self.account, chat_id, min_id, limit),
         )
 
+    def latest_inbox_event_id(self) -> int:
+        """Newest cursor ever handed out; a cheap primary-key lookup, safe to poll."""
+        return (
+            self.db.scalar(
+                "SELECT last_event_id FROM inbox_sequence WHERE account_id = ?", (self.account,)
+            )
+            or 0
+        )
+
+    def inbox_events(
+        self,
+        *,
+        after_event_id: int | None,
+        chat_id: int | None,
+        limit: int,
+        sender_id: int | None = None,
+    ) -> list[Any]:
+        """Listener events, newest first for browsing or oldest first after a cursor."""
+        clauses = ["i.account_id = ?"]
+        params: list[Any] = [self.account]
+        if after_event_id is not None:
+            clauses.append("i.event_id > ?")
+            params.append(after_event_id)
+        if chat_id is not None:
+            clauses.append("i.chat_id = ?")
+            params.append(chat_id)
+        if sender_id is not None:
+            clauses.append("m.sender_id = ?")
+            params.append(sender_id)
+        direction = "ASC" if after_event_id is not None else "DESC"
+        return self.db.all(
+            f"{INBOX_SELECT} WHERE {' AND '.join(clauses)} ORDER BY i.event_id {direction} LIMIT ?",
+            [*params, limit],
+        )
+
+    def consumer_cursor(self, name: str) -> int | None:
+        return self.db.scalar(
+            "SELECT last_event_id FROM inbox_consumers WHERE account_id = ? AND name = ?",
+            (self.account, name),
+        )
+
+    def save_consumer_cursor(self, name: str, event_id: int) -> None:
+        self.db.execute(
+            """
+            INSERT INTO inbox_consumers (account_id, name, last_event_id, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT (account_id, name) DO UPDATE SET
+                last_event_id = excluded.last_event_id,
+                updated_at = excluded.updated_at
+            """,
+            (self.account, name, event_id, to_iso(utc_now())),
+        )
+
     def message(self, chat_id: int, message_id: int) -> Any | None:
         return self.db.one(
             f"{MESSAGE_SELECT} WHERE m.account_id = ? AND m.chat_id = ? AND m.id = ?",
@@ -561,8 +762,8 @@ class Store:
             clauses.append("md.chat_id = ?")
             params.append(chat_id)
         if media_type:
-            clauses.append("lower(md.type) = lower(?)")
-            params.append(media_type)
+            clauses.append("(lower(md.kind) = lower(?) OR lower(md.type) = lower(?))")
+            params += [media_type, media_type]
         if on_this_node is not None:
             clauses.append(
                 f"{'' if on_this_node else 'NOT '}EXISTS (SELECT 1 FROM media_files f "
@@ -573,8 +774,9 @@ class Store:
         return self.db.all(
             f"""
             SELECT md.chat_id, md.message_id, m.date, c.name AS chat_name,
-                   md.type AS media_type, md.name AS media_name, md.mime_type AS media_mime_type,
-                   md.size AS media_size, md.width AS media_width, md.height AS media_height,
+                   md.type AS media_type, md.kind AS media_kind, md.name AS media_name,
+                   md.mime_type AS media_mime_type, md.size AS media_size,
+                   md.width AS media_width, md.height AS media_height,
                    md.duration AS media_duration, md.download_status AS media_download_status,
                    md.download_error AS media_download_error
             FROM media md
@@ -590,7 +792,16 @@ class Store:
     def info(self) -> dict[str, Any]:
         counts = {
             table: self.db.scalar(f"SELECT COUNT(*) FROM {table}")
-            for table in ("nodes", "peers", "dialogs", "messages", "media", "media_files")
+            for table in (
+                "nodes",
+                "peers",
+                "dialogs",
+                "messages",
+                "media",
+                "media_files",
+                "inbox_events",
+                "listeners",
+            )
         }
         return {
             "backend": self.db.dialect,

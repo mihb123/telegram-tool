@@ -18,3 +18,13 @@ class TeleError(Exception):
             error["hint"] = self.hint
         error.update(self.details)
         return {"ok": False, "error": error}
+
+
+def delivery_unknown(message: str) -> TeleError:
+    """A send whose outcome cannot be known; retrying blindly risks a duplicate message."""
+    return TeleError(
+        "delivery_unknown",
+        message,
+        exit_code=7,
+        hint="Do not automatically retry. Check the conversation first to avoid a duplicate.",
+    )

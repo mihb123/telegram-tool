@@ -17,19 +17,32 @@ umask 077 → load_env_files() → build_parser().parse_args()
 
 Mỗi CLI chỉ cần cung cấp `build_parser`, `dispatch`, `_render_text` rồi gọi `run(...)`.
 
+## Flag viết tắt (`cli/args.py:add_short_flags`)
+
+`build_parser()` của cả hai CLI kết thúc bằng `add_short_flags`: mỗi flag chỉ có dạng dài được
+gán short là chữ cái đầu (`--timeout` → `-t`), trùng thì lấy 2 chữ cái đầu (`--format` → `-fo`
+khi `-f` đã là `--from`), vẫn trùng thì giữ dạng dài (`tele get --max-age`). Short viết tay
+(`-u`, `-l`, `-s`, `-d`, `-m`) và `-h` được ưu tiên, flag khai báo trước thắng khi tranh nhau,
+mỗi subcommand tính riêng. Vì vậy cùng một flag có thể có short khác nhau giữa các lệnh; xem
+`<lệnh> -h`.
+
 ## Mã lỗi (`TeleError.exit_code`)
 
 | Exit | Mã lỗi tiêu biểu | Nơi raise |
 |---|---|---|
 | 1 | `connection_error`, `telegram_error` | `telegram/client.py` |
-| 2 | `invalid_target`, `invalid_message`, `invalid_query`, `invalid_sql`, `invalid_command`, `ambiguous_account`, `message_file_error` | `values.py`, `cli/*.py`, `store/*` |
-| 3 | `configuration_error` | `cli/tele.py`, `store/database.py:open_database` |
+| 1 | `listener_unavailable`, `listener_socket_error`, `invalid_listener_request` | `telegram/listener.py` (IPC giữa `tele send` và `tele listen`) |
+| 2 | `invalid_target`, `invalid_message`, `invalid_query`, `invalid_sql`, `invalid_command`, `ambiguous_account`, `message_file_error`, `chat_not_listened` | `values.py`, `cli/*.py`, `store/*` |
+| 3 | `configuration_error`, `listener_whitelist_empty` | `cli/tele.py`, `store/database.py:open_database` |
 | 4 | `not_authorized` | `telegram/client.py:authorized_client` |
 | 5 | `peer_not_found`, `not_cached`, `no_account` | `client.py:resolve_chat`, `cli/local.py:_peer`, `repository.py:require_account` |
 | 6 | `interactive_terminal_required` | `cli/tele.py` (`auth`) |
-| 7 | `delivery_unknown` | `telegram/messaging.py:send_text` |
+| 7 | `delivery_unknown` | `telegram/messaging.py:send_text_with_client`, `telegram/listener.py` |
 | 8 | `media_directory_error` | `telegram/media.py:prepare_media_directory` |
 | 9 | `store_error` | `store/database.py:store_error` |
+| 10 | `listener_error` | `telegram/listener.py:_listener_error` |
+| 11 | `listener_already_running`, `listener_lease_lost` | `store/repository.py` |
+| 12 | `listener_not_running` (kèm `cursor`) | `cli/local.py:_wait` |
 | 75 | `flood_wait` (kèm `retry_after_seconds`) | `telegram/client.py:_flood_wait_error` |
 | 130 | `interrupted` | `cli/runner.py` |
 

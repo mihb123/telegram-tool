@@ -22,10 +22,13 @@ Biến đã `export` trong shell luôn thắng. Sau đó file đứng trước t
 |---|---|---|
 | `TELE_API_ID`, `TELE_API_HASH` | `~/.config/tele/config.json` | `load_credentials` (phải đặt cả hai) |
 | `TELE_SESSION` | `~/.local/share/tele/telegram(.session)` | `session_path`, `session_file_path` |
+| `TELE_LISTENER_SOCKET` | `~/.local/share/tele/listener.sock` | `listener_socket_path` |
+| `TELE_LISTEN_CHATS` | bắt buộc cho `tele listen` | `listener_targets` |
 | `TELE_DATABASE_URL` | trống = SQLite | `database_url` |
 | `TELE_DB` | `~/.local/share/tele/messages.db` | `database_path` |
 | `TELE_MEDIA_DIR` (cũ: `TELE_DOWNLOAD_DIR`) | `media_dir` trong config.json, rồi `~/telegram-files` | `default_media_root` |
 | `TELE_CACHE_MAX_AGE` | `300` | `cli/tele.py:_default_max_age` |
+| `TELE_TIMEZONE` | `+7` (offset như `+9`, `UTC-05:30` hoặc tên IANA; sai định dạng cũng về `+7`). Dùng để in mọi mốc thời gian và để hiểu `--since`/`--until` không ghi múi giờ | `display_timezone` |
 | `TELE_ENV_FILE` | — | `env_files` |
 | `XDG_CONFIG_HOME`, `XDG_DATA_HOME` | `~/.config`, `~/.local/share` | `config_dir`, `data_dir` |
 
@@ -36,7 +39,7 @@ Biến chỉ dùng cho container PostgreSQL (`POSTGRES_*`, `TELE_DB_BIND`, `TELE
 
 | File | Vai trò |
 |---|---|
-| `src/tele_cli/config.py` | `PROJECT_ROOT`, `config_dir`, `data_dir`, `config_path`, `session_path`, `env_files`, `_parse_env_line` (hỗ trợ `export`, ngoặc kép, comment ` #`), `load_env_files`, `database_url`, `database_path`, `default_media_root`, credentials, `secure_*` |
+| `src/tele_cli/config.py` | `PROJECT_ROOT`, các config/data/session/socket path, `env_files`, `load_env_files`, database, media, credentials, `secure_*` |
 | `src/tele_cli/cli/runner.py` | `os.umask(0o077)` để mọi file tạo ra chỉ chủ sở hữu đọc được; gọi `load_env_files()` |
 | `src/tele_cli/cli/tele.py` | `_default_max_age` |
 | `.env.example` | Mẫu `.env` có chú thích; `make env` copy ra `.env` với mật khẩu ngẫu nhiên |
@@ -45,4 +48,7 @@ Biến chỉ dùng cho container PostgreSQL (`POSTGRES_*`, `TELE_DB_BIND`, `TELE
 ## Lưu ý khi sửa
 
 - Thêm biến mới: đọc trong `config.py`, ghi chú vào `.env.example` và bảng "Dữ liệu" trong `README.md`.
+- `TELE_LISTEN_CHATS` nhận danh sách cách nhau bằng dấu phẩy/khoảng trắng. Mỗi phần tử là
+  username, `@username`, marked ID của user/group/channel, hoặc `me`. Thiếu danh sách thì listener
+  fail-closed; một target resolve lỗi cũng làm listener không khởi động.
 - `load_env_files` dùng `os.environ.setdefault`: không ghi đè biến đã có.

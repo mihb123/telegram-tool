@@ -32,5 +32,4 @@ telegram-files/
 .vscode/
 *.swp
 .DS_Store
-tests/
 bin/

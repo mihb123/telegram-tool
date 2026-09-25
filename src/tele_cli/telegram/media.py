@@ -14,8 +14,8 @@ can see where each copy lives.
 
 from __future__ import annotations
 
+import os
 import re
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -99,7 +99,8 @@ class MediaDownloader:
         self.chat_id = chat_id
         self.directory = directory
         self.max_bytes = max_bytes
-        # With -d the files must end up in that directory, so cached copies are copied there.
+        # With -d the files must end up in that directory, so cached copies are hard-linked
+        # there (symlinked when a hard link fails, e.g. across filesystems).
         self.exact_directory = exact_directory
         self.statuses: dict[int, str] = {}
         self._pending: dict[int, Any] = {}
@@ -139,9 +140,12 @@ class MediaDownloader:
             return source.resolve()
         destination = _destination(media["message_id"], media, self.directory)
         if not destination.exists():
-            shutil.copy2(source, destination)
-            destination.chmod(0o600)
-        return destination.resolve()
+            # Link instead of copying so the same file never takes disk space twice.
+            try:
+                os.link(source, destination)
+            except OSError:
+                destination.symlink_to(source.resolve())
+        return destination.absolute()
 
     def _finish(self, media: Any, path: Path | None, status: str, error: str | None = None) -> None:
         if path is None:

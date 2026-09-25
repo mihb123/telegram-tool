@@ -21,11 +21,11 @@ from typing import Any
 
 from telethon import TelegramClient
 
-from ..config import Credentials
+from ..config import Credentials, display_timezone
 from ..store import Store
-from ..store.payloads import messages_payload, peer_payload
+from ..store.payloads import MISSING_FILE_STATUSES, messages_payload, peer_payload
 from ..store.repository import MAX_MESSAGE_ID
-from ..values import from_iso, parse_target, utc_now
+from ..values import display_time, from_iso, parse_target, utc_now
 from .client import authorized_client, resolve_chat
 from .media import MediaDownloader, prepare_media_directory
 from .records import message_record
@@ -136,6 +136,23 @@ class _Sync:
         )
 
 
+def _report_download(message: dict[str, Any], downloader: MediaDownloader) -> None:
+    """Overlay this run's outcome; the short form only reports why a file is absent."""
+    status = downloader.statuses.get(message["id"])
+    if status is None:
+        return
+    if isinstance(message.get("media"), dict):  # --meta
+        target = message["media"]
+    elif status in MISSING_FILE_STATUSES and "path" not in message:
+        target = message
+    else:
+        message.pop("download_status", None)
+        return
+    target["download_status"] = status
+    if status == "skipped_too_large":
+        target["max_size_bytes"] = downloader.max_bytes
+
+
 def _payload(
     store: Store,
     chat: Any,
@@ -146,25 +163,22 @@ def _payload(
     source: str,
     fetched: int,
     downloader: MediaDownloader | None,
+    meta: bool,
 ) -> dict[str, Any]:
-    messages = messages_payload(store, rows)
+    messages = messages_payload(store, rows, meta=meta)
     state = store.sync_state(chat["id"])
     query: dict[str, Any] = {"target": target_value, "limit": limit}
     if downloader is not None:
         query.update(download_media=True, max_media_bytes=downloader.max_bytes)
         for message in messages:
-            status = downloader.statuses.get(message["id"])
-            if status and "media" in message:
-                message["media"]["download_status"] = status
-                if status == "skipped_too_large":
-                    message["media"]["max_size_bytes"] = downloader.max_bytes
+            _report_download(message, downloader)
     payload: dict[str, Any] = {
         "ok": True,
         "query": query,
         "chat": peer_payload(chat),
         "cache": {
             "source": source,
-            "synced_at": state["checked_at"] if state else None,
+            "synced_at": display_time(state["checked_at"] if state else None, display_timezone()),
             "fetched_from_telegram": fetched,
         },
         "count": len(messages),
@@ -188,6 +202,7 @@ async def get_messages(
     max_media_bytes: int,
     max_age: int,
     refresh: bool,
+    meta: bool = False,
 ) -> dict[str, Any]:
     directory = prepare_media_directory(target_value, download_dir) if download_media else None
 
@@ -224,6 +239,7 @@ async def get_messages(
                 source="local",
                 fetched=0,
                 downloader=downloader,
+                meta=meta,
             )
         # Some attachments were never downloaded: fall through and fetch just those.
 
@@ -251,4 +267,5 @@ async def get_messages(
         source="telegram",
         fetched=len(sync.fetched),
         downloader=downloader,
+        meta=meta,
     )

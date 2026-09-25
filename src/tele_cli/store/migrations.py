@@ -120,4 +120,73 @@ MIGRATIONS: tuple[str, ...] = (
         CHECK (start_id <= end_id)
     );
     """,
+    # 2 — Telegram fields without a column (forward, views, reactions, links...) as JSON
+    """
+    ALTER TABLE messages ADD COLUMN meta TEXT;
+    """,
+    # 3 — durable listener inbox and one active listener lease per account
+    """
+    CREATE TABLE inbox_events (
+        account_id   BIGINT NOT NULL,
+        event_id     BIGINT NOT NULL,
+        chat_id      BIGINT NOT NULL,
+        message_id   BIGINT NOT NULL,
+        received_at  TEXT   NOT NULL,
+        PRIMARY KEY (account_id, event_id),
+        UNIQUE (account_id, chat_id, message_id),
+        FOREIGN KEY (account_id, chat_id, message_id)
+            REFERENCES messages (account_id, chat_id, id) ON DELETE CASCADE
+    );
+    CREATE INDEX inbox_events_chat
+        ON inbox_events (account_id, chat_id, event_id);
+
+    CREATE TABLE listeners (
+        account_id   BIGINT NOT NULL,
+        host         TEXT   NOT NULL,
+        os_user      TEXT   NOT NULL,
+        process_id   BIGINT NOT NULL,
+        started_at   TEXT   NOT NULL,
+        heartbeat_at TEXT   NOT NULL,
+        PRIMARY KEY (account_id, host, os_user, process_id)
+    );
+    CREATE INDEX listeners_heartbeat ON listeners (account_id, heartbeat_at);
+    """,
+    # 4 — what an attachment is (photo, video, sticker, voice, ...); NULL for link previews.
+    # Rows saved earlier only know the MIME type, so their kind is a best guess until
+    # the message is fetched again.
+    """
+    ALTER TABLE media ADD COLUMN kind TEXT;
+    UPDATE media SET kind = CASE
+        WHEN type = 'WebPage' THEN NULL
+        WHEN type = 'Photo' THEN 'photo'
+        WHEN type IN ('Geo', 'GeoLive', 'Venue') THEN 'location'
+        WHEN type <> 'Document' THEN lower(type)
+        WHEN mime_type IN ('image/webp', 'application/x-tgsticker') THEN 'sticker'
+        WHEN mime_type = 'audio/ogg' THEN 'voice'
+        WHEN mime_type LIKE 'video/%' THEN 'video'
+        WHEN mime_type LIKE 'audio/%' THEN 'audio'
+        ELSE 'file'
+    END;
+    """,
+    # 5 — last inbox cursor handed out per account. `inbox_events` rows disappear with their
+    # message (ON DELETE CASCADE), so MAX(event_id) could go backwards and reuse a cursor.
+    """
+    CREATE TABLE inbox_sequence (
+        account_id     BIGINT PRIMARY KEY,
+        last_event_id  BIGINT NOT NULL
+    );
+    INSERT INTO inbox_sequence (account_id, last_event_id)
+    SELECT account_id, MAX(event_id) FROM inbox_events GROUP BY account_id;
+    """,
+    # 6 — named inbox cursors (`tele-local wait --consumer NAME`), so an agent resumes where it
+    # left off without having to keep the cursor itself.
+    """
+    CREATE TABLE inbox_consumers (
+        account_id     BIGINT NOT NULL,
+        name           TEXT   NOT NULL,
+        last_event_id  BIGINT NOT NULL,
+        updated_at     TEXT   NOT NULL,
+        PRIMARY KEY (account_id, name)
+    );
+    """,
 )

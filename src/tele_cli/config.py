@@ -3,11 +3,17 @@ from __future__ import annotations
 import getpass
 import json
 import os
+import re
 import socket
 import tempfile
 from dataclasses import dataclass
+from datetime import timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+DEFAULT_DISPLAY_TIMEZONE = timezone(timedelta(hours=7))
+_UTC_OFFSET = re.compile(r"^(?:UTC|GMT)?([+-])(\d{1,2})(?::?(\d{2}))?$", re.IGNORECASE)
 
 # Source checkout root (…/src/tele_cli/config.py → …); inside a PyInstaller binary it is a
 # temporary directory without pyproject.toml, so no project .env is read there.
@@ -46,6 +52,27 @@ def session_path() -> Path:
 def session_file_path() -> Path:
     path = session_path()
     return path if path.suffix == ".session" else path.with_suffix(".session")
+
+
+def listener_socket_path() -> Path:
+    """Private local socket used to send through the listener's Telegram connection."""
+    override = os.environ.get("TELE_LISTENER_SOCKET")
+    return Path(override).expanduser().resolve() if override else data_dir() / "listener.sock"
+
+
+def listener_targets() -> tuple[str, ...]:
+    """Return the de-duplicated conversations accepted by the persistent listener."""
+    targets: list[str] = []
+    seen: set[str] = set()
+    for value in re.split(r"[,\s]+", os.environ.get("TELE_LISTEN_CHATS", "")):
+        target = value.strip()
+        if not target:
+            continue
+        key = target.removeprefix("@").casefold()
+        if key not in seen:
+            seen.add(key)
+            targets.append(target)
+    return tuple(targets)
 
 
 @dataclass(frozen=True)
@@ -107,6 +134,24 @@ def database_url() -> str | None:
 def database_path() -> Path:
     override = os.environ.get("TELE_DB")
     return Path(override).expanduser().resolve() if override else data_dir() / "messages.db"
+
+
+def display_timezone() -> tzinfo:
+    """$TELE_TIMEZONE as an offset ("+7", "UTC-05:30") or IANA name; UTC+7 when unset or invalid."""
+    value = os.environ.get("TELE_TIMEZONE", "").strip()
+    if not value:
+        return DEFAULT_DISPLAY_TIMEZONE
+    if offset := _UTC_OFFSET.match(value):
+        sign, hours, minutes = offset.groups()
+        hour_value, minute_value = int(hours), int(minutes or 0)
+        if hour_value <= 23 and minute_value <= 59:
+            delta = timedelta(hours=hour_value, minutes=minute_value)
+            return timezone(-delta if sign == "-" else delta)
+        return DEFAULT_DISPLAY_TIMEZONE
+    try:
+        return ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError):
+        return DEFAULT_DISPLAY_TIMEZONE
 
 
 def default_media_root() -> Path:

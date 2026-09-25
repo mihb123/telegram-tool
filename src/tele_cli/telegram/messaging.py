@@ -9,7 +9,7 @@ from typing import Any
 from telethon import events
 
 from ..config import Credentials
-from ..errors import TeleError
+from ..errors import delivery_unknown
 from ..store import Store
 from ..store.payloads import messages_payload, peer_payload
 from .client import authorized_client, resolve_chat
@@ -18,7 +18,7 @@ from .records import message_record
 
 def _stored_payload(store: Store, chat_id: int, message: Any) -> dict[str, Any]:
     store.save_messages(chat_id, [message_record(message)])
-    return messages_payload(store, [store.message(chat_id, message.id)])[0]
+    return messages_payload(store, [store.message(chat_id, message.id)], meta=True)[0]
 
 
 async def send_text(
@@ -32,42 +32,57 @@ async def send_text(
     dry_run: bool,
 ) -> dict[str, Any]:
     async with authorized_client(credentials, session) as client:
-        input_entity, chat = await resolve_chat(client, store, target_value)
-        request = {
-            "target": target_value,
-            "reply_to_message_id": reply_to,
-            "link_preview": link_preview,
-            "text": text,
-            "text_length": len(text),
-        }
-        if dry_run:
-            return {"ok": True, "action": "dry_run", "chat": peer_payload(chat), "request": request}
+        return await send_text_with_client(
+            client,
+            store,
+            target_value,
+            text,
+            reply_to,
+            link_preview,
+            dry_run,
+        )
 
-        try:
-            message = await client.send_message(
-                input_entity,
-                text,
-                reply_to=reply_to,
-                parse_mode=None,
-                link_preview=link_preview,
-            )
-        except (TimeoutError, OSError) as exc:
-            raise TeleError(
-                "delivery_unknown",
-                "The connection failed while sending; Telegram delivery status is unknown.",
-                exit_code=7,
-                hint=(
-                    "Do not automatically retry. Check the conversation first to avoid "
-                    "sending a duplicate."
-                ),
-            ) from exc
 
-        return {
-            "ok": True,
-            "action": "sent",
-            "chat": peer_payload(chat),
-            "message": _stored_payload(store, chat["id"], message),
-        }
+async def send_text_with_client(
+    client: Any,
+    store: Store,
+    target_value: str,
+    text: str,
+    reply_to: int | None,
+    link_preview: bool,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Send through an already connected client so the listener remains the session owner."""
+    input_entity, chat = await resolve_chat(client, store, target_value)
+    request = {
+        "target": target_value,
+        "reply_to_message_id": reply_to,
+        "link_preview": link_preview,
+        "text": text,
+        "text_length": len(text),
+    }
+    if dry_run:
+        return {"ok": True, "action": "dry_run", "chat": peer_payload(chat), "request": request}
+
+    try:
+        message = await client.send_message(
+            input_entity,
+            text,
+            reply_to=reply_to,
+            parse_mode=None,
+            link_preview=link_preview,
+        )
+    except (TimeoutError, OSError) as exc:
+        raise delivery_unknown(
+            "The connection failed while sending; Telegram delivery status is unknown."
+        ) from exc
+
+    return {
+        "ok": True,
+        "action": "sent",
+        "chat": peer_payload(chat),
+        "message": _stored_payload(store, chat["id"], message),
+    }
 
 
 async def wait_for_message(
@@ -79,7 +94,7 @@ async def wait_for_message(
     timeout_seconds: float,
 ) -> dict[str, Any]:
     """Wait for the first incoming message newer than a per-chat cursor."""
-    async with authorized_client(credentials, session, auto_reconnect=True) as client:
+    async with authorized_client(credentials, session, receive_updates=True) as client:
         input_entity, chat = await resolve_chat(client, store, target_value)
         chat_payload = peer_payload(chat)
 

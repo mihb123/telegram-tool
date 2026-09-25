@@ -14,17 +14,21 @@ from typing import Any
 from .. import __version__
 from ..config import (
     ConfigError,
+    Credentials,
+    listener_targets,
     load_credentials,
     save_credentials,
     session_path,
     validate_credentials,
 )
 from ..errors import TeleError
-from ..output import render_messages, render_table
+from ..output import dump_json_line, render_messages, render_table
 from ..store import Store
-from ..telegram import client, dialogs, history, messaging
+from ..telegram import client, dialogs, history, listener, messaging
 from .args import (
     add_format,
+    add_meta,
+    add_short_flags,
     add_target,
     bounded_int,
     non_negative_megabytes,
@@ -33,6 +37,7 @@ from .args import (
 from .runner import run
 
 DEFAULT_CACHE_MAX_AGE = 300
+MAX_GET_LIMIT = 5000
 
 
 def _default_max_age() -> int:
@@ -67,7 +72,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Get recent messages, newest first (served from the local cache when possible)",
     )
     add_target(get)
-    get.add_argument("-l", "--limit", type=bounded_int("limit", 1, 100), default=10)
+    get.add_argument(
+        "-l",
+        "--limit",
+        type=bounded_int("limit", 1, MAX_GET_LIMIT),
+        default=10,
+        help=f"Maximum number of messages to fetch (default: 10; maximum: {MAX_GET_LIMIT})",
+    )
+    add_meta(get)
     add_format(get)
     get.add_argument(
         "--download-media",
@@ -146,10 +158,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum wait in seconds (default: 900; maximum: 86400)",
     )
 
+    listen = subparsers.add_parser(
+        "listen",
+        help="Continuously store incoming messages for agents to consume locally",
+    )
+    listen.add_argument(
+        "--print-events",
+        action="store_true",
+        help="Print each received message as NDJSON (off by default to keep service logs private)",
+    )
+
     dialogs = subparsers.add_parser("dialogs", help="List recent dialogs and their IDs")
-    dialogs.add_argument("-l", "--limit", type=bounded_int("limit", 1, 100), default=50)
+    dialogs.add_argument(
+        "-l",
+        "--limit",
+        type=bounded_int("limit", 1, 100),
+        default=50,
+        help="Maximum number of dialogs to list (default: 50; maximum: 100)",
+    )
     add_format(dialogs)
-    return parser
+    return add_short_flags(parser)
 
 
 def _credentials_or_error():
@@ -192,6 +220,36 @@ def _message_text(args: argparse.Namespace) -> str:
     return text
 
 
+async def _send_text(
+    args: argparse.Namespace,
+    credentials: Credentials,
+    session: Path,
+    store: Store,
+    text: str,
+) -> dict[str, Any]:
+    """Prefer the listener's connection, falling back to a short direct connection."""
+    request = {
+        "action": "send",
+        "target": args.target,
+        "text": text,
+        "reply_to": args.reply_to,
+        "link_preview": args.link_preview,
+        "dry_run": args.dry_run,
+    }
+    if response := await listener.send_via_listener(request):
+        return response
+    return await messaging.send_text(
+        credentials,
+        session,
+        store,
+        args.target,
+        text,
+        args.reply_to,
+        args.link_preview,
+        args.dry_run,
+    )
+
+
 def dispatch(args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "configure":
         api_id = args.api_id or input("Telegram API ID: ").strip()
@@ -232,21 +290,11 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any]:
                     max_media_bytes=int(args.max_media_mb * 1024 * 1024),
                     max_age=args.max_age,
                     refresh=args.refresh,
+                    meta=args.meta,
                 )
             )
         if args.command == "send":
-            return asyncio.run(
-                messaging.send_text(
-                    credentials,
-                    session,
-                    store,
-                    args.target,
-                    _message_text(args),
-                    args.reply_to,
-                    args.link_preview,
-                    args.dry_run,
-                )
-            )
+            return asyncio.run(_send_text(args, credentials, session, store, _message_text(args)))
         if args.command == "wait":
             return asyncio.run(
                 messaging.wait_for_message(
@@ -256,6 +304,28 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any]:
                     args.target,
                     args.after_message_id,
                     args.timeout_seconds,
+                )
+            )
+        if args.command == "listen":
+            targets = listener_targets()
+            if not targets:
+                raise TeleError(
+                    "listener_whitelist_empty",
+                    "The Telegram listener has no configured conversations.",
+                    exit_code=3,
+                    hint=(
+                        "Set TELE_LISTEN_CHATS=username,123456789,-1001234567890 "
+                        "in ~/.config/tele/.env."
+                    ),
+                )
+            return asyncio.run(
+                listener.listen_forever(
+                    credentials,
+                    session,
+                    store,
+                    dump_json_line,
+                    print_events=args.print_events,
+                    targets=targets,
                 )
             )
         if args.command == "dialogs":

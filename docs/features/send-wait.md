@@ -14,6 +14,14 @@ database, nên `tele get` ngay sau đó sẽ tự biết có tin mới.
 
 Quy trình chuẩn: `tele send` → lấy `message.id` → `tele wait --after <id>` → `tele get`.
 
+Khi `tele listen` đang chạy, `tele send` tự gửi request qua Unix socket của listener để dùng
+chung Telegram connection. Workflow 24/7 dùng `tele-local inbox/wait`; `tele wait` ở đây chỉ
+là fallback one-shot hoặc clarification ngắn khi chưa chạy listener.
+
+Lỗi lúc connect socket (kể cả socket file còn sót nhưng không có process listen) fallback sang kết
+nối Telegram trực tiếp. Lỗi sau khi request đã ghi vào socket luôn là `delivery_unknown` (exit 7),
+vì daemon có thể đã gửi xong trước khi mất acknowledgement; không tự retry.
+
 ## Luồng xử lý
 
 - **send** (`messaging.py:send_text`): resolve chat → nếu `--dry-run` trả `request` → gửi
@@ -28,7 +36,8 @@ Quy trình chuẩn: `tele send` → lấy `message.id` → `tele wait --after <i
 
 | File | Vai trò |
 |---|---|
-| `src/tele_cli/telegram/messaging.py` | `send_text`, `wait_for_message`, `_stored_payload` (lưu tin rồi đọc lại từ database để JSON giống `get`) |
+| `src/tele_cli/telegram/messaging.py` | `send_text`, `send_text_with_client`, `wait_for_message`, `_stored_payload` |
+| `src/tele_cli/telegram/listener.py` | IPC để `tele send` dùng connection đang mở |
 | `src/tele_cli/cli/tele.py` | Subcommand `send`, `wait`; `_message_text()` đọc `-m`/`--stdin`/`--file`, bỏ xuống dòng cuối, kiểm tra rỗng và giới hạn 4096 |
 | `src/tele_cli/telegram/client.py` | `authorized_client(auto_reconnect=...)`, `resolve_chat` |
 | `src/tele_cli/telegram/records.py` | `message_record` |

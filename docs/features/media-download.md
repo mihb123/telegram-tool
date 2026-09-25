@@ -27,14 +27,15 @@ Tra cứu media đã lưu: `tele-local media` (xem [local-query.md](local-query.
    xong), rồi `_download_one()` với `progress_callback` cắt ngang khi vượt giới hạn.
 4. `_finish()` ghi kết quả: có file → `store.record_file()` (bảng `media_files`); không có
    file → `store.set_media_status()` (cột `media.download_status`).
-5. Với `-d`, bản sao cũ ở thư mục khác được copy vào `-d` (`_place`).
+5. Với `-d`, bản sao cũ ở thư mục khác được hard link vào `-d` (khác filesystem thì symlink),
+   không bao giờ copy thành file thứ hai (`_place`).
 
 ## File liên quan
 
 | File | Vai trò |
 |---|---|
 | `src/tele_cli/telegram/media.py` | `prepare_media_directory`, `_destination` (tên `<message_id>_<tên file>`, tránh trùng tên), `_is_complete`, class `MediaDownloader` (`resolve_locally`, `download`, `_download_one`, `summary`), `FILELESS_MEDIA_TYPES` |
-| `src/tele_cli/telegram/history.py` | Tạo `MediaDownloader` (`downloader_for`), quyết định có phải kết nối Telegram chỉ để tải media không, gắn `download_status` vào JSON |
+| `src/tele_cli/telegram/history.py` | Tạo `MediaDownloader` (`downloader_for`), quyết định có phải kết nối Telegram chỉ để tải media không, gắn `download_status` của lần chạy vào JSON (`_report_download`; bản rút gọn chỉ khi thiếu file) |
 | `src/tele_cli/telegram/records.py` | `media_record()`: loại media, `file_key` (`photo:<id>`/`document:<id>`), tên, đuôi, mime, kích thước |
 | `src/tele_cli/store/repository.py` | `media_rows`, `node_copies`, `record_file`, `set_media_status`, `files_for`, `media_list`; trong `save_messages` xoá bản sao cũ khi `file_key` đổi |
 | `src/tele_cli/store/migrations.py` | Bảng `media`, `media_files`, index `media_file_key` |

@@ -12,7 +12,7 @@ PyInstaller để chia sẻ cho máy không có Python.
 | Chuẩn bị môi trường | `uv sync` (tạo `.venv` theo `uv.lock`) |
 | Chạy từ source | `bin/tele ...`, `bin/tele-local ...` (symlink vào `~/bin` vẫn chạy được) |
 | Build | `make build` hoặc `./scripts/build-standalone` → `dist/tele`, `dist/tele-local`, `dist/SHA256SUMS` |
-| Cài vào máy | `make install` (mặc định `~/bin`, đổi bằng `INSTALL_DIR=...`) |
+| Cài vào máy + listener service | `make install` (binary vào `~/bin`, đổi bằng `INSTALL_DIR=...`; listener đang chạy thì tự restart), rồi `make start-listener` |
 | Lint / format | `make lint`, `uv run ruff format` |
 
 ## File liên quan
@@ -27,7 +27,8 @@ PyInstaller để chia sẻ cho máy không có Python.
 | `pyproject.toml` | Tên, phiên bản, `requires-python`, dependency (`telethon`, `cryptg`, `aiohttp`, `psycopg[binary]`), nhóm `dev` (`pyinstaller`, `ruff`), cấu hình ruff |
 | `uv.lock` | Chốt chính xác version + hash mọi dependency; commit cùng `pyproject.toml` |
 | `.python-version` | Phiên bản Python uv dùng cho `.venv` |
-| `Makefile` | Target `build`, `install`, `lint` |
+| `Makefile` | Target `build`, `install` (cài binary + unit + `restart_listener`), `*-listener`, `lint` |
+| `systemd/tele-listener.service` | User service giữ `tele listen` chạy liên tục |
 | `src/tele_cli/config.py` | `PROJECT_ROOT`: trong binary không có `pyproject.toml` nên bỏ qua `.env` của source |
 
 ## Lưu ý khi sửa

@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sqlite3
+import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing, suppress
 from pathlib import Path
 from typing import Any
 
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError, RPCError
+from telethon.sessions import SQLiteSession
 
 from ..config import Credentials, secure_data_directory, secure_session_file
 from ..errors import TeleError
@@ -27,15 +31,61 @@ def _flood_wait_error(exc: FloodWaitError) -> TeleError:
     )
 
 
+class _SessionSnapshot(SQLiteSession):
+    """In-memory copy of the session file for commands other than `tele listen` and `tele auth`.
+
+    The listener keeps the file open for its whole life: a copy never waits on or holds the
+    file's write lock and never overwrites the listener's update state. Entities learned here
+    are merged back on close so later numeric-ID lookups still work.
+    """
+
+    def __init__(self, session: Path) -> None:
+        self._opened_at = int(time.time())
+        super().__init__(str(session))  # Telethon derives the file name ("<session>.session")
+
+    def _cursor(self) -> sqlite3.Cursor:
+        if self._conn is None:
+            self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+            if os.path.exists(self.filename):
+                source_uri = f"{Path(self.filename).resolve().as_uri()}?mode=ro"
+                with closing(sqlite3.connect(source_uri, uri=True, timeout=5)) as source:
+                    source.backup(self._conn)
+        return self._conn.cursor()
+
+    def clone(self, to_instance: Any = None) -> SQLiteSession:
+        # CDN downloads clone the session; a plain in-memory one is what SQLiteSession gives.
+        return super().clone(to_instance or SQLiteSession())
+
+    def close(self) -> None:
+        if self._conn is None:
+            return
+        columns = "id, hash, username, phone, name, date"
+        learned = self._conn.execute(
+            f"SELECT {columns} FROM entities WHERE date >= ?", (self._opened_at,)
+        ).fetchall()
+        self._conn.close()
+        self._conn = None
+        if not learned or not os.path.exists(self.filename):
+            return
+        # Only a lookup cache: skip it rather than fail when the listener holds the lock.
+        with suppress(sqlite3.Error), closing(sqlite3.connect(self.filename, timeout=5)) as target:
+            target.executemany(
+                f"INSERT OR REPLACE INTO entities ({columns}) VALUES (?, ?, ?, ?, ?, ?)", learned
+            )
+            target.commit()
+
+
 def _client(
     credentials: Credentials,
     session: Path,
     *,
+    own_session: bool = False,
+    receive_updates: bool = False,
     auto_reconnect: bool = False,
 ) -> TelegramClient:
     secure_data_directory()
     return TelegramClient(
-        str(session),
+        str(session) if own_session else _SessionSnapshot(session),
         credentials.api_id,
         credentials.api_hash,
         connection_retries=2,
@@ -43,6 +93,7 @@ def _client(
         retry_delay=1,
         flood_sleep_threshold=0,
         auto_reconnect=auto_reconnect,
+        receive_updates=receive_updates,
         timeout=10,
     )
 
@@ -52,9 +103,17 @@ async def authorized_client(
     credentials: Credentials,
     session: Path,
     *,
-    auto_reconnect: bool = False,
+    receive_updates: bool = False,
+    own_session: bool = False,
 ) -> AsyncIterator[TelegramClient]:
-    client = _client(credentials, session, auto_reconnect=auto_reconnect)
+    """Connected, authorized client; ``receive_updates`` also keeps it reconnecting."""
+    client = _client(
+        credentials,
+        session,
+        own_session=own_session,
+        receive_updates=receive_updates,
+        auto_reconnect=receive_updates,
+    )
     try:
         await asyncio.wait_for(client.connect(), timeout=20)
         if not await client.is_user_authorized():
@@ -113,7 +172,7 @@ async def resolve_chat(
 async def authorize(
     credentials: Credentials, session: Path, store: Store, phone: str | None
 ) -> dict[str, Any]:
-    client = _client(credentials, session)
+    client = _client(credentials, session, own_session=True, receive_updates=True)
     try:
         await client.start(phone=phone or (lambda: input("Phone number: ").strip()))
         account = peer_record(await client.get_me())
